@@ -1048,6 +1048,81 @@ function coercePrimitiveForExcel(value: CellPrimitive): string | number | boolea
   return trimmed;
 }
 
+function extendSheetStyles(worksheet: ExcelJS.Worksheet, firstDataRow: number): void {
+  const lastRowNum = worksheet.lastRow?.number;
+  if (!lastRowNum || lastRowNum <= firstDataRow) return;
+
+  const srcRow = worksheet.getRow(firstDataRow);
+
+  for (let r = firstDataRow + 1; r <= lastRowNum; r++) {
+    const row = worksheet.getRow(r);
+
+    // 이미 템플릿 스타일(테두리)이 있으면 스킵
+    let hasStyle = false;
+    for (let c = 1; c <= 8; c++) {
+      if (row.getCell(c).border) {
+        hasStyle = true;
+        break;
+      }
+    }
+    if (hasStyle) continue;
+
+    // 완전히 빈 행은 스킵
+    let hasValue = false;
+    row.eachCell((cell) => {
+      if (cell.value != null && cell.value !== "") hasValue = true;
+    });
+    if (!hasValue) continue;
+
+    // 첫 데이터 행의 스타일 복사
+    const colCount = worksheet.columnCount || 72;
+    for (let c = 1; c <= colCount; c++) {
+      const srcCell = srcRow.getCell(c);
+      const destCell = row.getCell(c);
+      if (srcCell.border) destCell.border = JSON.parse(JSON.stringify(srcCell.border)) as ExcelJS.Borders;
+      if (srcCell.numFmt) destCell.numFmt = srcCell.numFmt;
+      if (srcCell.alignment) destCell.alignment = JSON.parse(JSON.stringify(srcCell.alignment)) as ExcelJS.Alignment;
+    }
+  }
+
+  // 데이터 유효성 확장: ExcelJS는 셀별(T8, T9...) 저장 방식 → 첫 행 정의를 신규 행에 복사
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ws = worksheet as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const model = ws.dataValidations?.model as Record<string, any> | undefined;
+  if (model) {
+    // 첫 데이터 행의 유효성 정의 수집 (예: "T8", "O8" 등)
+    const firstRowDvs: Array<{ col: string; dv: unknown }> = [];
+    for (const [ref, dv] of Object.entries(model)) {
+      const m = ref.match(/^([A-Z]+)(\d+)$/);
+      if (m && parseInt(m[2]) === firstDataRow) {
+        firstRowDvs.push({ col: m[1], dv });
+      }
+    }
+
+    // 이미 유효성이 있는 행 목록
+    const existingRows = new Set<number>();
+    for (const ref of Object.keys(model)) {
+      const m = ref.match(/^[A-Z]+(\d+)$/);
+      if (m) existingRows.add(parseInt(m[1]));
+    }
+
+    // 신규 행에 유효성 복사
+    for (let r = firstDataRow + 1; r <= lastRowNum; r++) {
+      if (existingRows.has(r)) continue;
+      const row = worksheet.getRow(r);
+      let hasValue = false;
+      row.eachCell((cell) => {
+        if (cell.value != null && cell.value !== "") hasValue = true;
+      });
+      if (!hasValue) continue;
+      for (const { col, dv } of firstRowDvs) {
+        model[`${col}${r}`] = { ...(dv as object) };
+      }
+    }
+  }
+}
+
 function findInvesteeWriteRow(sheet: XLSX.WorkSheet): number {
   const ref = sheet["!ref"];
   if (!ref) return INVESTEE_DATA_START_ROW;
@@ -1147,6 +1222,12 @@ export default function PerformanceAnalysisPage() {
         const cell = worksheet.getCell(change.row + 1, change.col + 1);
         cell.value = coercePrimitiveForExcel(change.value);
       }
+
+      // 신규 행에 테두리/콤보박스 스타일 확장
+      const investeeWS = excelWorkbook.getWorksheet(INVESTEE_SHEET_NAME);
+      if (investeeWS) extendSheetStyles(investeeWS, INVESTEE_DATA_START_ROW + 1);
+      const fundWS = excelWorkbook.getWorksheet(FUND_SHEET_NAME);
+      if (fundWS) extendSheetStyles(fundWS, 4); // 펀드 조합현황 첫 데이터 행 = 4 (1-indexed)
 
       const outputBuffer = await excelWorkbook.xlsx.writeBuffer();
       const blob = new Blob([outputBuffer], {
