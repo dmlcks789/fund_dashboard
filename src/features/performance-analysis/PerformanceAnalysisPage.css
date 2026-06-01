@@ -1,0 +1,99 @@
+.containerWide {
+  max-width: min(1760px, 96vw);
+}
+
+.analysisSection {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.analysisTitle {
+  margin: 0;
+  font-size: 24px;
+  color: #0f172a;
+}
+
+.uploadHint {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.sheetTabRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sheetTab {
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sheetTabActive {
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.sheetTabInactive {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.analysisMessage {
+  margin: 0;
+  color: #475569;
+  font-size: 14px;
+}
+
+.analysisMessageError {
+  color: #b91c1c;
+}
+
+.analysisMessageSuccess {
+  color: #0f766e;
+}
+
+.originalPreviewViewport {
+  height: min(78vh, 980px);
+  border: 1px solid #d8dee8;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.originalPreviewFrame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.unmatchedToggle {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #b45309;
+  cursor: pointer;
+}
+
+.unmatchedList {
+  margin: 0;
+  padding: 10px 16px;
+  background: #fefce8;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.unmatchedList li {
+  font-size: 13px;
+  color: #92400e;
+}
