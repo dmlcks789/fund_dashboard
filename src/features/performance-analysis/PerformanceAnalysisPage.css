@@ -70,6 +70,25 @@
   border: 0;
 }
 
+.progressBar {
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progressBarFill {
+  height: 100%;
+  background: #1d4ed8;
+  border-radius: 4px;
+  transition: width 0.2s ease;
+}
+
+.progressLabel {
+  font-size: 13px;
+  color: #475569;
+}
+
 .unmatchedToggle {
   background: #f1f5f9;
   border: 1px solid #cbd5e1;
