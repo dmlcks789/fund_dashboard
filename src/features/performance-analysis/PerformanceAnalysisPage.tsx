@@ -1218,12 +1218,10 @@ function applyInvesteeFirmsToTemplate(sourceWorkbook: XLSX.WorkBook, targetSheet
   if (!ref) return;
   const range = XLSX.utils.decode_range(ref);
 
+  const SRC_COMPANY_COL = 5; // DQ01. 기업명
+
   for (let srcRow = INVESTEE_DATA_START_ROW; srcRow <= range.e.r; srcRow += 1) {
-    let hasContent = false;
-    for (let col = 1; col <= range.e.c; col += 1) {
-      if (getCellText(sourceSheet, srcRow, col)) { hasContent = true; break; }
-    }
-    if (!hasContent) continue;
+    if (!getCellText(sourceSheet, srcRow, SRC_COMPANY_COL)) continue;
 
     const writeRow = findInvesteeWriteRow(targetSheet);
     setSheetCellText(targetSheet, writeRow, 0, writeRow - INVESTEE_DATA_START_ROW + 1);
