@@ -232,6 +232,68 @@ export function findValueRightOfColumnALabel(sheet: XLSX.WorkSheet, targetLabel:
   return null;
 }
 
+/**
+ * 지정 행 범위 내에서 DQ 필드코드(예: "DQ08")로 레이블 셀을 찾아 우측 첫 값을 반환.
+ * 한글 텍스트 매칭보다 견고하다.
+ */
+export function findValueInRowRangeByFieldCode(
+  sheet: XLSX.WorkSheet,
+  startRow: number,
+  endRow: number,
+  fieldCode: string
+): CellPrimitive {
+  const ref = sheet["!ref"];
+  if (!ref || !fieldCode) return null;
+  const range = XLSX.utils.decode_range(ref);
+  const fromRow = Math.max(range.s.r, startRow);
+  const toRow = Math.min(range.e.r, endRow);
+
+  for (let row = fromRow; row <= toRow; row += 1) {
+    for (let col = range.s.c; col <= range.e.c; col += 1) {
+      const text = getCellText(sheet, row, col);
+      if (!text || extractFieldCode(text) !== fieldCode) continue;
+      for (let valueCol = col + 1; valueCol <= range.e.c; valueCol += 1) {
+        const rawValue = getCellRawValue(sheet, row, valueCol);
+        const textValue = getCellText(sheet, row, valueCol);
+        if (!isBlankValue(rawValue) || textValue !== "") {
+          return textValue !== "" ? textValue : rawValue;
+        }
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+export function findValueInRowRangeByLabel(
+  sheet: XLSX.WorkSheet,
+  startRow: number,
+  endRow: number,
+  targetLabel: string
+): CellPrimitive {
+  const ref = sheet["!ref"];
+  if (!ref) return null;
+  const range = XLSX.utils.decode_range(ref);
+  const fromRow = Math.max(range.s.r, startRow);
+  const toRow = Math.min(range.e.r, endRow);
+
+  for (let row = fromRow; row <= toRow; row += 1) {
+    for (let col = range.s.c; col <= range.e.c; col += 1) {
+      const text = getCellText(sheet, row, col);
+      if (!text || !labelsMatch(text, targetLabel)) continue;
+      for (let valueCol = col + 1; valueCol <= range.e.c; valueCol += 1) {
+        const rawValue = getCellRawValue(sheet, row, valueCol);
+        const textValue = getCellText(sheet, row, valueCol);
+        if (!isBlankValue(rawValue) || textValue !== "") {
+          return textValue !== "" ? textValue : rawValue;
+        }
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
 export function findValueRightOfColumnAFieldCodeOccurrence(
   sheet: XLSX.WorkSheet,
   fieldCode: string,

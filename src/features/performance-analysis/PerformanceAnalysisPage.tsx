@@ -10,28 +10,26 @@ import {
   INVESTEE_DATA_START_ROW,
   MANAGEMENT_FIELD_LABELS,
   ASSOCIATION_FIELD_LABELS,
-  INVESTMENT_FIELD_LABELS,
   IPO_FIELD_LABELS,
   INVESTMENT_YEARS,
 } from "./constants";
 import {
-  getCellText,
-  getCellRawValue,
   isBlankValue,
   labelsMatch,
-  findCellByLabel,
-  findSheetNameContainingLabel,
   extractFieldCode,
   setSheetCellText,
 } from "./utils/excelCellUtils";
 import {
   findRowToWrite,
-  applyLabelMappedSection,
+  parseAllManagementSections,
+  findManagementTargetCols,
+  parseAssociationSection,
+  findAssociationTargetCols,
+  parseInvestmentData,
   findInvestmentTargetLayout,
-  findRowByColumnAFieldCode,
-  findYearCellNearRow,
   resolveInvestmentTargetColumn,
-  parseBestPracticeCases,
+  parseIPOSection,
+  findIPOTargetCols,
 } from "./utils/fundSheetUtils";
 import { applyInvesteeFirmsToTemplate } from "./utils/investeeSheetUtils";
 import {
@@ -215,63 +213,71 @@ export default function PerformanceAnalysisPage() {
           const writeRow = findRowToWrite(targetSheet);
           setSheetCellText(targetSheet, writeRow, 0, writeRow - 2);
 
-          applyLabelMappedSection(sourceSheet, targetSheet, writeRow, MANAGEMENT_FIELD_LABELS);
-          applyLabelMappedSection(sourceSheet, targetSheet, writeRow, ASSOCIATION_FIELD_LABELS);
-          applyLabelMappedSection(sourceSheet, targetSheet, writeRow, IPO_FIELD_LABELS);
+          const managementSections = parseAllManagementSections(sourceSheet, MANAGEMENT_FIELD_LABELS);
 
+          for (let sectionIdx = 0; sectionIdx < Math.min(managementSections.length, 2); sectionIdx += 1) {
+            const sectionData = managementSections[sectionIdx];
+            const targetCols = findManagementTargetCols(targetSheet, sectionIdx);
+
+            for (const fieldLabel of MANAGEMENT_FIELD_LABELS) {
+              const value = sectionData[fieldLabel] ?? null;
+              if (isBlankValue(value)) continue;
+              const fieldCode = extractFieldCode(fieldLabel);
+              if (!fieldCode) continue;
+              const targetCol = targetCols[fieldCode];
+              if (targetCol === undefined) continue;
+              setSheetCellText(targetSheet, writeRow, targetCol, value);
+            }
+          }
+
+          // 조합 정보 (DQ01. 조합명 ~ DQ13. 부산기업 집행 투자금액)
+          const assocData = parseAssociationSection(sourceSheet, ASSOCIATION_FIELD_LABELS);
+          const assocTargetCols = findAssociationTargetCols(targetSheet);
+          for (const fieldLabel of ASSOCIATION_FIELD_LABELS) {
+            const value = assocData[fieldLabel] ?? null;
+            if (isBlankValue(value)) continue;
+            const fieldCode = extractFieldCode(fieldLabel);
+            if (!fieldCode) continue;
+            const targetCol = assocTargetCols[fieldCode];
+            if (targetCol === undefined) continue;
+            setSheetCellText(targetSheet, writeRow, targetCol, value);
+          }
+
+          // 투자 현황 (A01~A14 × 2025~2027년)
+          const investmentData = parseInvestmentData(sourceSheet);
           const targetInvestmentLayout = findInvestmentTargetLayout(targetSheet, INVESTMENT_YEARS);
-          const sourceA01Row = findRowByColumnAFieldCode(sourceSheet, "A01");
-          if (sourceA01Row !== null && targetInvestmentLayout) {
-            const targetHeaderRow = targetInvestmentLayout.headerRow;
+          if (targetInvestmentLayout) {
+            const { headerRow: targetHeaderRow, yearStartCols } = targetInvestmentLayout;
             for (const year of INVESTMENT_YEARS) {
-              const sourceYearCell = findYearCellNearRow(sourceSheet, year, sourceA01Row - 1, 6);
-              if (!sourceYearCell) {
-                continue;
-              }
-              const yearStartCol = targetInvestmentLayout.yearStartCols[year];
-              for (let codeIndex = 0; codeIndex < INVESTMENT_FIELD_LABELS.length; codeIndex += 1) {
-                const fieldCode = extractFieldCode(INVESTMENT_FIELD_LABELS[codeIndex]);
-                if (!fieldCode) {
-                  continue;
-                }
-                const sourceRow = sourceYearCell.row + 1 + codeIndex;
-                const rawValue = getCellRawValue(sourceSheet, sourceRow, sourceYearCell.col);
-                const textValue = getCellText(sourceSheet, sourceRow, sourceYearCell.col);
-                if (isBlankValue(rawValue) && textValue === "") {
-                  continue;
-                }
-                const value = textValue !== "" ? textValue : rawValue;
-                const targetCol = resolveInvestmentTargetColumn(targetSheet, targetHeaderRow, yearStartCol, fieldCode, codeIndex);
-                if (targetCol === null) {
-                  continue;
-                }
+              const values = investmentData[year];
+              if (!values) continue;
+              const yearStartCol = yearStartCols[year];
+              for (let i = 0; i < values.length && i < 14; i += 1) {
+                const value = values[i];
+                if (isBlankValue(value)) continue;
+                const fieldCode = `A${String(i + 1).padStart(2, "0")}`;
+                const targetCol = resolveInvestmentTargetColumn(
+                  targetSheet, targetHeaderRow, yearStartCol, fieldCode, i
+                );
+                if (targetCol === null) continue;
                 setSheetCellText(targetSheet, writeRow, targetCol, value);
               }
             }
           }
 
-          const sourceCaseSheetName = findSheetNameContainingLabel(sourceWorkbook, "수범 기업 #1");
-          const sourceCaseSheet = sourceCaseSheetName ? sourceWorkbook.Sheets[sourceCaseSheetName] : undefined;
-          if (sourceCaseSheet) {
-            const parsedCases = parseBestPracticeCases(sourceCaseSheet);
-            const firstContent = parsedCases[0]?.content?.trim();
-            if (firstContent) {
-              for (let index = 0; index < 3; index += 1) {
-                const markerLabel = `수범 기업 #${index + 1}`;
-                const markerCell = findCellByLabel(targetSheet, markerLabel);
-                if (!markerCell) {
-                  continue;
-                }
-                const caseData = parsedCases[index];
-                if (caseData?.company) {
-                  setSheetCellText(targetSheet, writeRow, markerCell.col, caseData.company);
-                }
-                if (caseData?.content) {
-                  setSheetCellText(targetSheet, writeRow, markerCell.col + 1, caseData.content);
-                }
-              }
-            }
+          // IPO 현황 (A15~A17)
+          const ipoData = parseIPOSection(sourceSheet, IPO_FIELD_LABELS);
+          const ipoTargetCols = findIPOTargetCols(targetSheet);
+          for (const fieldLabel of IPO_FIELD_LABELS) {
+            const value = ipoData[fieldLabel] ?? null;
+            if (isBlankValue(value)) continue;
+            const fieldCode = extractFieldCode(fieldLabel);
+            if (!fieldCode) continue;
+            const targetCol = ipoTargetCols[fieldCode];
+            if (targetCol === undefined) continue;
+            setSheetCellText(targetSheet, writeRow, targetCol, value);
           }
+
         }
 
         if (targetInvesteeSheet) {

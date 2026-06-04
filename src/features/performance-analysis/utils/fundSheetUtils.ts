@@ -4,12 +4,16 @@ import { INVESTMENT_YEARS } from "../constants";
 import {
   getCellText,
   labelsMatch,
+  normalizeLabel,
   findCellByLabel,
   extractFieldCode,
   findFirstMeaningfulValueRightOfCell,
   findFirstNonEmptyCellInRow,
   findLabelInRowWindow,
   findValueRightOfColumnALabel,
+  getCellRawValue,
+  findValueInRowRangeByFieldCode,
+  findValueInRowRangeByLabel,
   isBlankValue,
   isStrictYearToken,
   setSheetCellText,
@@ -106,17 +110,22 @@ export function parseBestPracticeCases(sourceSheet: XLSX.WorkSheet): ParsedCase[
 
 // ── 헤더/컬럼 탐색 ──────────────────────────────────────────────
 
+// 템플릿 데이터 시작 행(row 3) 이전의 헤더 구역(row 0~2)을 열 기준으로 스캔.
+// 세로 병합 등으로 헤더가 여러 행에 걸쳐 있어도 올바르게 탐색한다.
+const HEADER_SEARCH_MAX_ROW = 2; // 0-indexed, row 3부터 데이터
+
 export function findColumnByHeaderLabel(sheet: XLSX.WorkSheet, headerLabel: string): number | null {
   const ref = sheet["!ref"];
-  if (!ref) {
-    return null;
-  }
+  if (!ref) return null;
   const range = XLSX.utils.decode_range(ref);
-  const headerRow = 2;
+  const maxRow = Math.min(range.e.r, HEADER_SEARCH_MAX_ROW);
+
   for (let col = range.s.c; col <= range.e.c; col += 1) {
-    const text = getCellText(sheet, headerRow, col);
-    if (text && labelsMatch(text, headerLabel)) {
-      return col;
+    for (let row = range.s.r; row <= maxRow; row += 1) {
+      const text = getCellText(sheet, row, col);
+      if (text && labelsMatch(text, headerLabel)) {
+        return col;
+      }
     }
   }
   return null;
@@ -124,15 +133,16 @@ export function findColumnByHeaderLabel(sheet: XLSX.WorkSheet, headerLabel: stri
 
 export function findColumnByHeaderCode(sheet: XLSX.WorkSheet, fieldCode: string): number | null {
   const ref = sheet["!ref"];
-  if (!ref) {
-    return null;
-  }
+  if (!ref) return null;
   const range = XLSX.utils.decode_range(ref);
-  const headerRow = 2;
+  const maxRow = Math.min(range.e.r, HEADER_SEARCH_MAX_ROW);
+
   for (let col = range.s.c; col <= range.e.c; col += 1) {
-    const text = getCellText(sheet, headerRow, col);
-    if (extractFieldCode(text) === fieldCode) {
-      return col;
+    for (let row = range.s.r; row <= maxRow; row += 1) {
+      const text = getCellText(sheet, row, col);
+      if (extractFieldCode(text) === fieldCode) {
+        return col;
+      }
     }
   }
   return null;
@@ -144,21 +154,20 @@ export function findColumnByHeaderCodeOccurrence(
   occurrenceIndex: number
 ): number | null {
   const ref = sheet["!ref"];
-  if (!ref || occurrenceIndex < 0) {
-    return null;
-  }
+  if (!ref || occurrenceIndex < 0) return null;
   const range = XLSX.utils.decode_range(ref);
-  const headerRow = 2;
+  const maxRow = Math.min(range.e.r, HEADER_SEARCH_MAX_ROW);
+
   let matchedIndex = 0;
+  // 열을 기준으로 스캔해야 열 순서대로 출현 횟수를 올바르게 셀 수 있다.
   for (let col = range.s.c; col <= range.e.c; col += 1) {
-    const text = getCellText(sheet, headerRow, col);
-    if (extractFieldCode(text) !== fieldCode) {
-      continue;
+    for (let row = range.s.r; row <= maxRow; row += 1) {
+      const text = getCellText(sheet, row, col);
+      if (extractFieldCode(text) !== fieldCode) continue;
+      if (matchedIndex === occurrenceIndex) return col;
+      matchedIndex += 1;
+      break; // 한 열에서 한 번만 카운트
     }
-    if (matchedIndex === occurrenceIndex) {
-      return col;
-    }
-    matchedIndex += 1;
   }
   return null;
 }
@@ -602,4 +611,367 @@ export function writeValueAtLabelTarget(
   }
   const writeCell = findWriteCellRightOfLabel(sheet, labelCell.row, labelCell.col);
   setSheetCellText(sheet, writeCell.row, writeCell.col, value);
+}
+
+// ── 운용사 정보 소스 파싱 ────────────────────────────────────────────
+
+/**
+ * 소스 시트에서 "DQ01. 운용사명" 셀의 행/열 위치를 모두 반환.
+ * Co-GP이면 2개, 일반이면 1개.
+ */
+function findManagementDQ01Positions(
+  sheet: XLSX.WorkSheet
+): Array<{ row: number; labelCol: number }> {
+  const ref = sheet["!ref"];
+  if (!ref) return [];
+  const range = XLSX.utils.decode_range(ref);
+  const positions: Array<{ row: number; labelCol: number }> = [];
+
+  for (let row = range.s.r; row <= range.e.r; row += 1) {
+    for (let col = range.s.c; col <= range.e.c; col += 1) {
+      const text = getCellText(sheet, row, col);
+      // DQ01 + "운용사명" → 관리정보 DQ01 (조합명과 구분)
+      if (extractFieldCode(text) === "DQ01" && labelsMatch(text, "운용사명")) {
+        positions.push({ row, labelCol: col });
+        break;
+      }
+    }
+  }
+  return positions;
+}
+
+/**
+ * 소스 시트에서 '운용사 정보' 섹션을 모두 찾아 각 섹션의 fieldLabels 값을 반환.
+ * 전략: "DQ01. 운용사명" 행을 기준으로 11행을 위치 기반으로 읽는다.
+ * (섹션 헤더나 레이블 텍스트 매칭에 의존하지 않아 인코딩 차이에 강함)
+ */
+export function parseAllManagementSections(
+  sheet: XLSX.WorkSheet,
+  fieldLabels: readonly string[]
+): Array<Record<string, CellPrimitive>> {
+  const dq01Positions = findManagementDQ01Positions(sheet);
+  if (dq01Positions.length === 0) return [];
+
+  const ref = sheet["!ref"];
+  const range = ref ? XLSX.utils.decode_range(ref) : null;
+
+  return dq01Positions.map(({ row: startRow, labelCol }) => {
+    const data: Record<string, CellPrimitive> = {};
+    for (let i = 0; i < fieldLabels.length && i < 11; i += 1) {
+      const dataRow = startRow + i;
+      let value: CellPrimitive = null;
+      if (range) {
+        for (let valueCol = labelCol + 1; valueCol <= range.e.c; valueCol += 1) {
+          const rawValue = getCellRawValue(sheet, dataRow, valueCol);
+          const textValue = getCellText(sheet, dataRow, valueCol);
+          if (!isBlankValue(rawValue) || textValue !== "") {
+            value = textValue !== "" ? textValue : rawValue;
+            break;
+          }
+        }
+      }
+      data[fieldLabels[i]] = value;
+    }
+    return data;
+  });
+}
+
+// ── 타겟 템플릿 관리정보 컬럼 탐색 ──────────────────────────────────
+
+/**
+ * 타겟 템플릿에서 "DQ01. 운용사명"의 n번째 출현 컬럼을 기준으로
+ * DQ01~DQ11 각각의 컬럼 번호를 반환.
+ * "1. 운용사 정보"(occurrence=0), "1-1. 운용사 정보"(occurrence=1)
+ */
+export function findManagementTargetCols(
+  sheet: XLSX.WorkSheet,
+  sectionOccurrence: number
+): Record<string, number> {
+  const ref = sheet["!ref"];
+  if (!ref) return {};
+  const range = XLSX.utils.decode_range(ref);
+  const maxRow = Math.min(range.e.r, HEADER_SEARCH_MAX_ROW + 1);
+
+  // "DQ01. 운용사명"이 있는 컬럼 목록 (left→right 순)
+  const dq01Cols: number[] = [];
+  for (let col = range.s.c; col <= range.e.c; col += 1) {
+    for (let row = range.s.r; row <= maxRow; row += 1) {
+      const text = getCellText(sheet, row, col);
+      if (extractFieldCode(text) === "DQ01" && labelsMatch(text, "운용사명")) {
+        dq01Cols.push(col);
+        break;
+      }
+    }
+  }
+
+  const startCol = dq01Cols[sectionOccurrence];
+  if (startCol === undefined) return {};
+
+  // 다음 "DQ01. 운용사명" 직전까지가 이 섹션의 컬럼 범위
+  const endCol = dq01Cols[sectionOccurrence + 1] !== undefined
+    ? dq01Cols[sectionOccurrence + 1] - 1
+    : range.e.c;
+
+  const result: Record<string, number> = {};
+  for (let i = 1; i <= 11; i += 1) {
+    const code = `DQ${String(i).padStart(2, "0")}`;
+    for (let col = startCol; col <= Math.min(endCol, range.e.c); col += 1) {
+      let found = false;
+      for (let row = range.s.r; row <= maxRow; row += 1) {
+        if (extractFieldCode(getCellText(sheet, row, col)) === code) {
+          result[code] = col;
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+  }
+  return result;
+}
+
+// ── 조합 정보 파싱 ──────────────────────────────────────────────────
+
+function findAssociationDQ01Position(
+  sheet: XLSX.WorkSheet
+): { row: number; labelCol: number } | null {
+  const ref = sheet["!ref"];
+  if (!ref) return null;
+  const range = XLSX.utils.decode_range(ref);
+
+  for (let row = range.s.r; row <= range.e.r; row += 1) {
+    for (let col = range.s.c; col <= range.e.c; col += 1) {
+      const text = getCellText(sheet, row, col);
+      if (extractFieldCode(text) === "DQ01" && labelsMatch(text, "조합명")) {
+        return { row, labelCol: col };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 소스 시트에서 조합 정보 DQ01~DQ13 값을 위치 기반으로 읽어 반환.
+ */
+export function parseAssociationSection(
+  sheet: XLSX.WorkSheet,
+  fieldLabels: readonly string[]
+): Record<string, CellPrimitive> {
+  const position = findAssociationDQ01Position(sheet);
+  if (!position) return {};
+
+  const { row: startRow, labelCol } = position;
+  const ref = sheet["!ref"];
+  const range = ref ? XLSX.utils.decode_range(ref) : null;
+  const data: Record<string, CellPrimitive> = {};
+
+  for (let i = 0; i < fieldLabels.length && i < 13; i += 1) {
+    const dataRow = startRow + i;
+    let value: CellPrimitive = null;
+    if (range) {
+      for (let valueCol = labelCol + 1; valueCol <= range.e.c; valueCol += 1) {
+        const rawValue = getCellRawValue(sheet, dataRow, valueCol);
+        const textValue = getCellText(sheet, dataRow, valueCol);
+        if (!isBlankValue(rawValue) || textValue !== "") {
+          value = textValue !== "" ? textValue : rawValue;
+          break;
+        }
+      }
+    }
+    data[fieldLabels[i]] = value;
+  }
+  return data;
+}
+
+/**
+ * 타겟 템플릿에서 조합 정보 DQ01~DQ13 컬럼 번호를 반환.
+ */
+export function findAssociationTargetCols(sheet: XLSX.WorkSheet): Record<string, number> {
+  const ref = sheet["!ref"];
+  if (!ref) return {};
+  const range = XLSX.utils.decode_range(ref);
+  const maxRow = Math.min(range.e.r, HEADER_SEARCH_MAX_ROW + 1);
+
+  let startCol: number | undefined;
+  for (let col = range.s.c; col <= range.e.c; col += 1) {
+    for (let row = range.s.r; row <= maxRow; row += 1) {
+      const text = getCellText(sheet, row, col);
+      if (extractFieldCode(text) === "DQ01" && labelsMatch(text, "조합명")) {
+        startCol = col;
+        break;
+      }
+    }
+    if (startCol !== undefined) break;
+  }
+  if (startCol === undefined) return {};
+
+  const result: Record<string, number> = {};
+  for (let i = 1; i <= 13; i += 1) {
+    const code = `DQ${String(i).padStart(2, "0")}`;
+    for (let col = startCol; col <= range.e.c; col += 1) {
+      let found = false;
+      for (let row = range.s.r; row <= maxRow; row += 1) {
+        if (extractFieldCode(getCellText(sheet, row, col)) === code) {
+          result[code] = col;
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+  }
+  return result;
+}
+
+// ── 투자 현황 파싱 ──────────────────────────────────────────────────
+
+function isYearHeader(text: string, year: string): boolean {
+  const compact = text.replace(/\s/g, "");
+  return compact === year || compact === `${year}년`;
+}
+
+function findInvestmentSectionHeaderRow(sheet: XLSX.WorkSheet): {
+  headerRow: number;
+  yearCols: Partial<Record<InvestmentYear, number>>;
+} | null {
+  const ref = sheet["!ref"];
+  if (!ref) return null;
+  const range = XLSX.utils.decode_range(ref);
+
+  for (let row = range.s.r; row <= range.e.r; row += 1) {
+    let hasGubun = false;
+    const yearCols: Partial<Record<InvestmentYear, number>> = {};
+
+    for (let col = range.s.c; col <= range.e.c; col += 1) {
+      const text = getCellText(sheet, row, col);
+      if (!text) continue;
+      if (normalizeLabel(text) === "구분") hasGubun = true;
+      for (const year of INVESTMENT_YEARS) {
+        if (isYearHeader(text, year)) yearCols[year] = col;
+      }
+    }
+
+    if (hasGubun && Object.keys(yearCols).length >= 1) {
+      return { headerRow: row, yearCols };
+    }
+  }
+  return null;
+}
+
+/**
+ * 소스 시트에서 투자 현황(A01~A14) 값을 연도 컬럼 기준으로 읽어 반환.
+ * { "2025": [A01값, A02값, ..., A14값], "2026": [...], "2027": [...] }
+ */
+export function parseInvestmentData(
+  sheet: XLSX.WorkSheet
+): Partial<Record<InvestmentYear, CellPrimitive[]>> {
+  const layout = findInvestmentSectionHeaderRow(sheet);
+  if (!layout) return {};
+
+  const { headerRow, yearCols } = layout;
+  const result: Partial<Record<InvestmentYear, CellPrimitive[]>> = {};
+
+  for (const year of INVESTMENT_YEARS) {
+    const col = yearCols[year];
+    if (col === undefined) continue;
+
+    const values: CellPrimitive[] = [];
+    for (let i = 1; i <= 14; i += 1) {
+      const dataRow = headerRow + i;
+      const rawValue = getCellRawValue(sheet, dataRow, col);
+      const textValue = getCellText(sheet, dataRow, col);
+      let value: CellPrimitive = null;
+      if (!isBlankValue(rawValue) || textValue !== "") {
+        value = textValue !== "" ? textValue : rawValue;
+      }
+      values.push(value);
+    }
+    result[year] = values;
+  }
+
+  return result;
+}
+
+// ── IPO 현황 파싱 ────────────────────────────────────────────────────
+
+/**
+ * 소스 시트에서 "A15." 행을 찾아 A15~A17 값을 위치 기반으로 읽어 반환.
+ */
+export function parseIPOSection(
+  sheet: XLSX.WorkSheet,
+  fieldLabels: readonly string[]
+): Record<string, CellPrimitive> {
+  const ref = sheet["!ref"];
+  if (!ref) return {};
+  const range = XLSX.utils.decode_range(ref);
+
+  let startRow: number | undefined;
+  let labelCol: number | undefined;
+
+  for (let row = range.s.r; row <= range.e.r; row += 1) {
+    for (let col = range.s.c; col <= range.e.c; col += 1) {
+      if (extractFieldCode(getCellText(sheet, row, col)) === "A15") {
+        startRow = row;
+        labelCol = col;
+        break;
+      }
+    }
+    if (startRow !== undefined) break;
+  }
+
+  if (startRow === undefined || labelCol === undefined) return {};
+
+  const data: Record<string, CellPrimitive> = {};
+  for (let i = 0; i < fieldLabels.length && i < 3; i += 1) {
+    const dataRow = startRow + i;
+    let value: CellPrimitive = null;
+    for (let valueCol = labelCol + 1; valueCol <= range.e.c; valueCol += 1) {
+      const rawValue = getCellRawValue(sheet, dataRow, valueCol);
+      const textValue = getCellText(sheet, dataRow, valueCol);
+      if (!isBlankValue(rawValue) || textValue !== "") {
+        value = textValue !== "" ? textValue : rawValue;
+        break;
+      }
+    }
+    data[fieldLabels[i]] = value;
+  }
+  return data;
+}
+
+/**
+ * 타겟 템플릿에서 A15~A17 컬럼 번호를 반환.
+ */
+export function findIPOTargetCols(sheet: XLSX.WorkSheet): Record<string, number> {
+  const ref = sheet["!ref"];
+  if (!ref) return {};
+  const range = XLSX.utils.decode_range(ref);
+  const maxRow = Math.min(range.e.r, HEADER_SEARCH_MAX_ROW + 1);
+
+  let startCol: number | undefined;
+  for (let col = range.s.c; col <= range.e.c; col += 1) {
+    for (let row = range.s.r; row <= maxRow; row += 1) {
+      if (extractFieldCode(getCellText(sheet, row, col)) === "A15") {
+        startCol = col;
+        break;
+      }
+    }
+    if (startCol !== undefined) break;
+  }
+  if (startCol === undefined) return {};
+
+  const result: Record<string, number> = {};
+  for (const code of ["A15", "A16", "A17"]) {
+    for (let col = startCol; col <= range.e.c; col += 1) {
+      let found = false;
+      for (let row = range.s.r; row <= maxRow; row += 1) {
+        if (extractFieldCode(getCellText(sheet, row, col)) === code) {
+          result[code] = col;
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+  }
+  return result;
 }

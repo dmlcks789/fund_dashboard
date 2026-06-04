@@ -2,6 +2,13 @@
   max-width: min(1760px, 96vw);
 }
 
+.uploadRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .analysisSection {
   display: flex;
   flex-direction: column;

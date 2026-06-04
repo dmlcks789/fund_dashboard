@@ -1,32 +1,5 @@
-﻿.appLayout {
+.appLayout {
   max-width: 1800px;
   margin: 24px auto 0;
   padding: 0 12px;
 }
-
-.tabRow {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.tabButton {
-  border: 1px solid #d1d5db;
-  border-radius: 10px;
-  padding: 9px 14px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.tabButtonActive {
-  background: #1d4ed8;
-  border-color: #1d4ed8;
-  color: #fff;
-}
-
-.tabButtonInactive {
-  background: #fff;
-  color: #334155;
-}
-
