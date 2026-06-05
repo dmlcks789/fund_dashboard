@@ -30,6 +30,8 @@ import {
   resolveInvestmentTargetColumn,
   parseIPOSection,
   findIPOTargetCols,
+  parseBestPracticeCases,
+  findBestPracticeTargetCols,
 } from "./utils/fundSheetUtils";
 import { applyInvesteeFirmsToTemplate } from "./utils/investeeSheetUtils";
 import {
@@ -276,6 +278,20 @@ export default function PerformanceAnalysisPage() {
             const targetCol = ipoTargetCols[fieldCode];
             if (targetCol === undefined) continue;
             setSheetCellText(targetSheet, writeRow, targetCol, value);
+          }
+
+          // 수범 기업 사례 (최대 3개)
+          const bestPracticeCases = parseBestPracticeCases(sourceSheet);
+          const bestPracticeTargetCols = findBestPracticeTargetCols(targetSheet);
+          for (let i = 0; i < Math.min(bestPracticeCases.length, 3); i += 1) {
+            const { company, content } = bestPracticeCases[i];
+            const { companyNameCol, contentCol } = bestPracticeTargetCols[i];
+            if (companyNameCol !== null && company) {
+              setSheetCellText(targetSheet, writeRow, companyNameCol, company);
+            }
+            if (contentCol !== null && content) {
+              setSheetCellText(targetSheet, writeRow, contentCol, content);
+            }
           }
 
         }

@@ -89,20 +89,16 @@ export function parseBestPracticeCases(sourceSheet: XLSX.WorkSheet): ParsedCase[
       ? findFirstMeaningfulValueRightOfCell(sourceSheet, companyLabel.row, companyLabel.col, ["기업명", "내용"])
       : null;
 
-    let content = "";
-    for (let row = marker.row + 2; row < sectionEndRow; row += 1) {
+    const contentStartRow = (companyLabel?.row ?? marker.row) + 1;
+    const contentParts: string[] = [];
+    for (let row = contentStartRow; row < sectionEndRow; row += 1) {
       const cell = findFirstNonEmptyCellInRow(sourceSheet, row, marker.col);
-      if (!cell) {
-        continue;
-      }
-      if (labelsMatch(cell.value, "기업명") || labelsMatch(cell.value, "내용")) {
-        continue;
-      }
-      content = cell.value;
-      break;
+      if (!cell) continue;
+      if (labelsMatch(cell.value, "기업명") || labelsMatch(cell.value, "내용")) continue;
+      contentParts.push(cell.value);
     }
 
-    results.push({ company: companyCell?.value ?? "", content });
+    results.push({ company: companyCell?.value ?? "", content: contentParts.join("\n") });
   }
 
   return results;
@@ -974,4 +970,59 @@ export function findIPOTargetCols(sheet: XLSX.WorkSheet): Record<string, number>
     }
   }
   return result;
+}
+
+// ── 수범 기업 사례 타겟 컬럼 탐색 ────────────────────────────────────
+
+/**
+ * 타겟 템플릿에서 "5. 부산기업 수범 사례" 섹션의 기업명/내용 컬럼 쌍 3개를 반환.
+ * 반환 순서: [수범기업#1, 수범기업#2, 수범기업#3]
+ */
+export function findBestPracticeTargetCols(
+  sheet: XLSX.WorkSheet
+): Array<{ companyNameCol: number | null; contentCol: number | null }> {
+  const empty = Array.from({ length: 3 }, () => ({
+    companyNameCol: null as number | null,
+    contentCol: null as number | null,
+  }));
+  const ref = sheet["!ref"];
+  if (!ref) return empty;
+  const range = XLSX.utils.decode_range(ref);
+  const maxRow = Math.min(range.e.r, HEADER_SEARCH_MAX_ROW);
+
+  // "수범사례" 텍스트가 있는 섹션 시작 컬럼 탐색
+  let sectionStartCol = -1;
+  outerLoop:
+  for (let col = range.s.c; col <= range.e.c; col += 1) {
+    for (let row = 0; row <= maxRow; row += 1) {
+      const text = getCellText(sheet, row, col);
+      if (text && normalizeLabel(text).includes("수범사례")) {
+        sectionStartCol = col;
+        break outerLoop;
+      }
+    }
+  }
+  if (sectionStartCol === -1) return empty;
+
+  // 섹션 시작 컬럼부터 "기업명"/"내용" 컬럼 순서대로 수집
+  const companyNameCols: number[] = [];
+  const contentCols: number[] = [];
+  for (let col = sectionStartCol; col <= range.e.c; col += 1) {
+    for (let row = 0; row <= maxRow; row += 1) {
+      const norm = normalizeLabel(getCellText(sheet, row, col));
+      if (norm === "기업명") {
+        companyNameCols.push(col);
+        break;
+      }
+      if (norm === "내용") {
+        contentCols.push(col);
+        break;
+      }
+    }
+  }
+
+  return Array.from({ length: 3 }, (_, i) => ({
+    companyNameCol: companyNameCols[i] ?? null,
+    contentCol: contentCols[i] ?? null,
+  }));
 }
